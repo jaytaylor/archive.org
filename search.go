@@ -167,12 +167,28 @@ func sparklineFor(u string, timeout time.Duration) (*sparkline, error) {
 	return sl, nil
 }
 
+const maxRetries = 10
+
 // simpleHTTPJSON deserializes response body content from get request url into
 // objPtr.
-func simpleHTTPJSON(u string, objPtr interface{}, timeout time.Duration) (*http.Response, error) {
+func simpleHTTPJSON(u string, objPtr interface{}, timeout time.Duration, attempt ...int) (*http.Response, error) {
+	if len(attempt) == 0 {
+		attempt = []int{0}
+	}
+	attempt[0]++
+	log.WithField("url", u).Debug("Downloading JSON data")
 	resp, body, err := doRequest("", u, nil, timeout)
 	if err != nil {
-		return resp, err
+		u80 := strings.Replace(u, "https://", "http://", 1)
+		log.Debug(u80)
+		if resp, body, err = doRequest("", u80, nil, timeout); err != nil {
+			log.Debugf("e2=%s", err)
+			if attempt[0] > maxRetries {
+				return resp, err
+			}
+			time.Sleep(5 * time.Second * time.Duration(attempt[0]))
+			return simpleHTTPJSON(u, objPtr, timeout, attempt...)
+		}
 	}
 	if err := json.Unmarshal(body, objPtr); err != nil {
 		return resp, err
