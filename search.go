@@ -8,8 +8,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"gigawatt.io/errorlib"
+	"github.com/cenkalti/backoff"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -20,6 +23,7 @@ var (
 	HTTPHost              = "archive.org"                                                                                                              // Overrideable default package value.
 	UserAgent             = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/65.0.3325.162 Safari/537.36" // Overrideable default package value.
 	DefaultRequestTimeout = 10 * time.Second                                                                                                           // Overrideable default package value.
+	MaxTries              = 10                                                                                                                         // Max number download retries before giving up.
 )
 
 // Snapshot represents an instance of a URL page snapshot on archive.is.
@@ -120,37 +124,53 @@ type sparkline struct {
 func (sl *sparkline) captures() ([]calendarPoint, error) {
 	var (
 		points = []calendarPoint{}
+		errs   = []error{}
+		wg     sync.WaitGroup
+		mu     sync.Mutex
 	)
 
 	for year, monthCounts := range sl.Years {
 		for _, count := range monthCounts {
 			// Capture each year with a non-empty crawl count month.
 			if count > 0 {
-				var (
-					queryURL = fmt.Sprintf("%v/__wb/calendarcaptures?url=%v&selected_year=%v", BaseURL, sl.safeURL, year)
-					captures = [][][]*calendarPoint{}
-				)
+				wg.Add(1)
+				go func(year int) {
+					var (
+						queryURL = fmt.Sprintf("%v/__wb/calendarcaptures?url=%v&selected_year=%v", BaseURL, sl.safeURL, year)
+						captures = [][][]*calendarPoint{}
+					)
 
-				if _, err := simpleHTTPJSON(queryURL, &captures, sl.timeout); err != nil {
-					return nil, err
-				}
+					if _, err := simpleHTTPJSON(queryURL, &captures, sl.timeout); err != nil {
+						mu.Lock()
+						errs = append(errs, err)
+						mu.Unlock()
+					}
 
-				for _, pointlessArray := range captures {
-					// NB: Not clear why the API always encloses contents in an
-					// array of size 1.
-					if len(pointlessArray) > 0 {
-						for _, point := range pointlessArray[0] {
-							if point != nil && !point.isEmpty() {
-								points = append(points, *point)
+					for _, pointlessArray := range captures {
+						// NB: Not clear why the API always encloses contents in an
+						// array of size 1.
+						if len(pointlessArray) > 0 {
+							for _, point := range pointlessArray[0] {
+								if point != nil && !point.isEmpty() {
+									mu.Lock()
+									points = append(points, *point)
+									mu.Unlock()
+								}
 							}
 						}
 					}
-				}
 
-				// Skip the rest of the year since we already have it now.
+				}(year)
+				// Skip the rest of the months this year since now we already have it.
 				break
 			}
 		}
+	}
+
+	wg.Wait()
+
+	if err := errorlib.Merge(errs); err != nil {
+		return nil, err
 	}
 	return points, nil
 }
@@ -167,31 +187,42 @@ func sparklineFor(u string, timeout time.Duration) (*sparkline, error) {
 	return sl, nil
 }
 
-const maxRetries = 10
-
 // simpleHTTPJSON deserializes response body content from get request url into
-// objPtr.
-func simpleHTTPJSON(u string, objPtr interface{}, timeout time.Duration, attempt ...int) (*http.Response, error) {
-	if len(attempt) == 0 {
-		attempt = []int{0}
+// objPtr.  Includes backoff logic.
+func simpleHTTPJSON(u string, objPtr interface{}, timeout time.Duration) (*http.Response, error) {
+	var (
+		resp *http.Response
+		body []byte
+		bk   = backoff.WithMaxRetries(newBackOff(), uint64(MaxTries))
+	)
+
+	notify := func(err error, d time.Duration) {
+		log.WithField("url", u).WithField("duration", d).Warnf("Backoff notified about: %s", err)
 	}
-	attempt[0]++
-	log.WithField("url", u).Debug("Downloading JSON data")
-	resp, body, err := doRequest("", u, nil, timeout)
-	if err != nil {
-		u80 := strings.Replace(u, "https://", "http://", 1)
-		log.Debug(u80)
-		if resp, body, err = doRequest("", u80, nil, timeout); err != nil {
-			log.Debugf("e2=%s", err)
-			if attempt[0] > maxRetries {
-				return resp, err
-			}
-			time.Sleep(5 * time.Second * time.Duration(attempt[0]))
-			return simpleHTTPJSON(u, objPtr, timeout, attempt...)
+
+	op := func() error {
+		log.WithField("url", u).Debug("Downloading JSON data")
+		var err error
+		if resp, body, err = doRequest("", u, nil, timeout); err != nil {
+			return err
 		}
+		return nil
+	}
+
+	if err := backoff.RetryNotify(op, bk, notify); err != nil {
+		return nil, err
 	}
 	if err := json.Unmarshal(body, objPtr); err != nil {
 		return resp, err
 	}
 	return resp, nil
+}
+
+func newBackOff() backoff.BackOff {
+	bk := backoff.NewExponentialBackOff()
+
+	bk.InitialInterval = 5 * time.Second
+	bk.Multiplier = 2.0
+	bk.MaxInterval = 30 * time.Second
+	return bk
 }
