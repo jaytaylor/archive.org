@@ -28,6 +28,10 @@ go get jaytaylor.com/archive.org/...
 
 #### Command-line programs
 
+##### `archive.org <url>`
+
+Archive a fresh new copy of an HTML page
+
 ##### `archive.org-snapshots <url>`
 
 Search for existing page snapshots
@@ -35,6 +39,33 @@ Search for existing page snapshots
 #### Go package interfaces
 
 ##### Search for Existing Snapshots
+
+[capture.go](_examples/capture/capture.go):
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/jaytaylor/archive.org"
+)
+
+var captureURL = "https://jaytaylor.com/"
+
+func main() {
+	archiveURL, err := archiveorg.Capture(captureURL, archiveorg.DefaultRequestTimeout)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Successfully archived %v via archive.org: %v\n", captureURL, archiveURL)
+}
+
+// Output:
+//
+// Successfully archived https://jaytaylor.com/ via archive.org: https://archive.is/i2PiW
+```
+
 
 [search.go](_examples/search/search.go):
 
