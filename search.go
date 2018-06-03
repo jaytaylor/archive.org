@@ -8,10 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"gigawatt.io/errorlib"
 	"github.com/cenkalti/backoff"
 	log "github.com/sirupsen/logrus"
 )
@@ -124,54 +122,39 @@ type sparkline struct {
 func (sl *sparkline) captures() ([]calendarPoint, error) {
 	var (
 		points = []calendarPoint{}
-		errs   = []error{}
-		wg     sync.WaitGroup
-		mu     sync.Mutex
 	)
 
 	for year, monthCounts := range sl.Years {
 		for _, count := range monthCounts {
 			// Capture each year with a non-empty crawl count month.
 			if count > 0 {
-				wg.Add(1)
-				go func(year int) {
-					var (
-						queryURL = fmt.Sprintf("%v/__wb/calendarcaptures?url=%v&selected_year=%v", BaseURL, sl.safeURL, year)
-						captures = [][][]*calendarPoint{}
-					)
+				var (
+					queryURL = fmt.Sprintf("%v/__wb/calendarcaptures?url=%v&selected_year=%v", BaseURL, sl.safeURL, year)
+					captures = [][][]*calendarPoint{}
+				)
 
-					if _, err := simpleHTTPJSON(queryURL, &captures, sl.timeout); err != nil {
-						mu.Lock()
-						errs = append(errs, err)
-						mu.Unlock()
-					}
+				if _, err := simpleHTTPJSON(queryURL, &captures, sl.timeout); err != nil {
+					return nil, err
+				}
 
-					for _, pointlessArray := range captures {
-						// NB: Not clear why the API always encloses contents in an
-						// array of size 1.
-						if len(pointlessArray) > 0 {
-							for _, point := range pointlessArray[0] {
-								if point != nil && !point.isEmpty() {
-									mu.Lock()
-									points = append(points, *point)
-									mu.Unlock()
-								}
+				for _, pointlessArray := range captures {
+					// NB: Not clear why the API always encloses contents in an
+					// array of size 1.
+					if len(pointlessArray) > 0 {
+						for _, point := range pointlessArray[0] {
+							if point != nil && !point.isEmpty() {
+								points = append(points, *point)
 							}
 						}
 					}
+				}
 
-				}(year)
 				// Skip the rest of the months this year since now we already have it.
 				break
 			}
 		}
 	}
 
-	wg.Wait()
-
-	if err := errorlib.Merge(errs); err != nil {
-		return nil, err
-	}
 	return points, nil
 }
 
@@ -191,19 +174,26 @@ func sparklineFor(u string, timeout time.Duration) (*sparkline, error) {
 // objPtr.  Includes backoff logic.
 func simpleHTTPJSON(u string, objPtr interface{}, timeout time.Duration) (*http.Response, error) {
 	var (
-		resp *http.Response
-		body []byte
-		bk   = backoff.WithMaxRetries(newBackOff(), uint64(MaxTries))
+		resp               *http.Response
+		body               []byte
+		b0, disableBackOff = newBackOff()
+		bk                 = backoff.WithMaxRetries(b0, uint64(MaxTries))
 	)
 
 	notify := func(err error, d time.Duration) {
-		log.WithField("url", u).WithField("duration", d).Warnf("Backoff notified about: %s", err)
+		log.WithField("url", u).WithField("next-duration", d).Warnf("Backoff notified about: %s", err)
 	}
 
 	op := func() error {
 		log.WithField("url", u).Debug("Downloading JSON data")
 		var err error
 		if resp, body, err = doRequest("", u, nil, timeout); err != nil {
+			if resp != nil && resp.StatusCode != 403 {
+				// Stop retrying when there's an error and the HTTP status code
+				//is not 403
+				log.WithField("url", u).Warnf("Disabling backoff due to non-403 HTTP return status code=%v", resp.StatusCode)
+				disableBackOff()
+			}
 			return err
 		}
 		return nil
@@ -218,11 +208,17 @@ func simpleHTTPJSON(u string, objPtr interface{}, timeout time.Duration) (*http.
 	return resp, nil
 }
 
-func newBackOff() backoff.BackOff {
+func newBackOff() (backoff.BackOff, func()) {
 	bk := backoff.NewExponentialBackOff()
 
-	bk.InitialInterval = 5 * time.Second
-	bk.Multiplier = 2.0
-	bk.MaxInterval = 30 * time.Second
-	return bk
+	disabler := func() {
+		bk.Multiplier = 0.0
+		bk.MaxInterval = time.Duration(1)
+	}
+
+	bk.InitialInterval = 30 * time.Second
+	bk.Multiplier = 1.5
+	bk.MaxInterval = 60 * time.Second
+
+	return bk, disabler
 }
