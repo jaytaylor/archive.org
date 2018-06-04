@@ -14,6 +14,17 @@ Created by [Jay Taylor](https://jaytaylor.com/).
 
 Also see: [archive.is golang package](https://jaytaylor.com/archive.is)
 
+### TODO
+
+* Finish migrating to archive.org API
+* Consider unifying to single binary
+* Add `id_`, `js_`, `cs_`, etc info to golang pkg.
+
+Related resources:
+
+* http://ws-dl.blogspot.com/2013/07/2013-07-15-wayback-machine-upgrades.html
+* https://en.wikipedia.org/wiki/Help:Using_the_Wayback_Machine
+
 ### Requirements
 
 * Go version 1.9 or newer
