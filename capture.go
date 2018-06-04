@@ -11,12 +11,16 @@ import (
 var NoContentLocationErr = errors.New("missing 'content-lcation' header") // Returned when a malformed response is returned by archive.org.
 
 // Capture requests a
-func Capture(url string, timeout time.Duration) (string, error) {
+func Capture(url string, timeout ...time.Duration) (string, error) {
+	if len(timeout) == 0 {
+		timeout = []time.Duration{DefaultRequestTimeout}
+	}
+
 	pleaseCrawl := fmt.Sprintf("%v/save/%v", BaseURL, url)
 
 	log.WithField("crawl-request", pleaseCrawl).Debugf("Requesting archive.org crawl")
 
-	resp, _, err := doRequest("", pleaseCrawl, nil, timeout)
+	resp, _, err := doRequest("", pleaseCrawl, nil, timeout[0])
 	if err != nil {
 		return "", err
 	}

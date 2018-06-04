@@ -8,9 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/moul/http2curl"
-	log "github.com/sirupsen/logrus"
+	// "github.com/moul/http2curl"
+	// log "github.com/sirupsen/logrus"
 )
 
 func doRequest(method string, url string, body io.ReadCloser, timeout time.Duration) (*http.Response, []byte, error) {
@@ -23,13 +22,13 @@ func doRequest(method string, url string, body io.ReadCloser, timeout time.Durat
 		req.Header.Set("content-type", "application/x-www-form-urlencoded")
 	}
 
-	cc, _ := http2curl.GetCurlCommand(req)
-	log.Debugf("Equivalent command: %v", cc)
+	// cc, _ := http2curl.GetCurlCommand(req)
+	// log.Debugf("Equivalent command: %v", cc)
 
 	client := newClient(timeout)
 	resp, err := client.Do(req)
 	if err != nil {
-		return resp, nil, fmt.Errorf("executing request: %s", err)
+		return resp, nil, fmt.Errorf("executing request to %v: %s", url, err)
 	}
 	if resp.StatusCode/100 != 2 && resp.StatusCode/100 != 3 {
 		return resp, nil, fmt.Errorf("%v request to %v received unhappy response status-code=%v", method, url, resp.StatusCode)
